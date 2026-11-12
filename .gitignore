@@ -1,0 +1,19 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+venv/
+# compiled Swift tools
+swift/matte
+swift/matte_subject
+swift/facetrack
+swift/mouthtrack
+# media
+*.mp4
+*.mov
+*.m4v
+*.wav
+*.png
+*.jpg
+*.json
+!requirements.txt
