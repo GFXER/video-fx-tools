@@ -7,8 +7,15 @@ if sr != 48000: print('NOTE sr', sr)
 w = int(0.005 * sr); fr = 200
 e = 20 * np.log10(np.sqrt(np.convolve(m ** 2, np.ones(w) / w, 'same'))[::w] + 1e-6)
 lo = sosfilt(butter(4, 140, 'lp', fs=sr, output='sos'), m); el = 20 * np.log10(np.sqrt(np.convolve(lo ** 2, np.ones(w) / w, 'same'))[::w] + 1e-6)
-def hits(x, thr):
-    return np.array([i / fr for i in range(60, len(x) - 10) if np.max(x[i:i + 3]) - np.mean(x[i - 50:i - 6]) > thr and x[i] - x[i - 1] > 2.5])
+def hits(x, thr, gap=0.09, rise=0.5):
+    # one hit per transient: the peak must also clear the last ~50 ms by `rise` dB (a decaying low kick ripples in the
+    # 5 ms envelope and used to re-trigger every ~25 ms), and re-triggers within `gap` s are ignored
+    out, last = [], -1e9
+    for i in range(60, len(x) - 10):
+        pk = np.max(x[i:i + 3])
+        if pk - np.mean(x[i - 50:i - 6]) > thr and x[i] - x[i - 1] > 2.5 and pk - np.max(x[i - 10:i - 1]) > rise and i / fr - last >= gap:
+            out.append(i / fr); last = i / fr
+    return np.array(out)
 ts = hits(el, 9)
 if len(ts) < 40: ts = np.concatenate([ts, hits(e, 9)]); ts.sort()
 best = None
