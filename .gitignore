@@ -17,3 +17,7 @@ swift/mouthtrack
 *.jpg
 *.json
 !requirements.txt
+
+# test caches
+.pytest_cache/
+tests/__pycache__/

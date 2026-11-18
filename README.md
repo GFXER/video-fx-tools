@@ -111,6 +111,15 @@ swift/mouthtrack in.mov out.json    # [{t,open}], open = inner-lip height (norma
 ```
 Cross-correlate `open` against the audio envelope to measure an audio/video offset.
 
+## Tests
+
+Smoke tests use synthetic inputs only (no media files needed):
+
+```sh
+pip install pytest
+FFMPEG=/path/to/ffmpeg python -m pytest -q tests   # ffmpeg tests are skipped if no ffmpeg is found
+```
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
