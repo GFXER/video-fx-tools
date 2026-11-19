@@ -86,6 +86,14 @@ python3 keyalpha.py in.png out.png                 # ffmpeg from FFMPEG / PATH
 python3 keyalpha.py /path/to/ffmpeg in.png out.png # explicit ffmpeg (original form)
 ```
 
+### dupe_find.py: near-duplicate photos (what's still unused in an archive)
+64-bit difference hash after EXIF rotation, so resized, re-encoded and rotated copies still match.
+```sh
+python3 dupe_find.py groups ARCHIVE_DIR                         # groups of near-duplicates
+python3 dupe_find.py unused ARCHIVE_DIR --used USED_DIR [--json out.json]   # archive photos not in USED_DIR (one per group)
+```
+`--dist N` sets the Hamming distance that still counts as the same photo (default 8 / 10 against `--used`).
+
 ### swift/matte: person matte + face track (macOS Vision)
 ```sh
 swift/matte in.mp4 <start_s> <dur_s> out_matte.mp4 out_face.json [preview.jpg]
