@@ -64,7 +64,13 @@ and refer to references by id; `path` entries resolve relative to `GRADES_ROOT` 
 ### beat_map.py: tempo, phase and per-bar energy
 ```sh
 python3 beat_map.py track.wav      # writes track.beat.json {bpm, beat, phase, sr, dur, hits, fit, bars, low}
+python3 beat_map.py track.wav --grid 8th                        # + "grid": [{t, bar, beat, sub, kind}, ...]
+python3 beat_map.py track.wav --grid 16th --csv cuts.csv --fps 25 # + marker list with HH:MM:SS:FF timecodes
 ```
+`--grid beat|8th|16th` adds one entry per grid line from the first detected beat (bar 1 beat 1) to the end;
+`kind` is `downbeat`, `beat`, `8th` or `16th`. `--csv` writes the same grid (beats if `--grid` is not given) as
+`Marker Name, Description, In, Out, Duration, Marker Type` rows (the layout of Premiere's marker list), named
+`Bar 3` / `3.2` / `3.2.3`. Timecode is non-drop at the rounded `--fps` (default 30), counted from real time.
 
 ### voice_fx.py: voice reverb transitions for offline mixes
 `reverb_tail()` ("echo out" on the last word before a transition) and `reverse_swell()` ("pre-verb" into the
