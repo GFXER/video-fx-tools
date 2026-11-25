@@ -72,6 +72,15 @@ python3 beat_map.py track.wav --grid 16th --csv cuts.csv --fps 25 # + marker lis
 `Marker Name, Description, In, Out, Duration, Marker Type` rows (the layout of Premiere's marker list), named
 `Bar 3` / `3.2` / `3.2.3`. Timecode is non-drop at the rounded `--fps` (default 30), counted from real time.
 
+### ramp_profile.py: per-frame speed ramp for Time Remap
+Turns a ramp (`apex`, `beat` or `step`) into source time and speed for every comp frame, and says which frame
+blending the slowest part needs. No dependencies. It never reads past the end of the source: the fast parts are
+slowed first, and `short_source` is reported when even the slow part does not fit.
+```sh
+python3 ramp_profile.py '{"family":"beat","comp_in":0,"comp_out":2,"src_in":0,"src_avail":6,"src_fps":50}' 24
+python3 ramp_profile.py shot.json 30 --csv ramp.csv --json ramp.json
+```
+
 ### voice_fx.py: voice reverb transitions for offline mixes
 `reverb_tail()` ("echo out" on the last word before a transition) and `reverse_swell()` ("pre-verb" into the
 first word after one). Both return a wet-only signal to add to the dry voice. Import it, or run the demo:
