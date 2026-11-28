@@ -47,7 +47,22 @@ python3 curve_fit.py scan  ref.mp4 --t0 0 --t1 5 --out moves          # global m
 python3 curve_fit.py fit   ref.mp4 --t0 1.2 --t1 1.8 --roi 0.2,0.3,0.4,0.2 --prop scale --out pop
 python3 curve_fit.py series values.csv --fps 20 --out mymove         # fit values you measured another way
 python3 curve_fit.py curve zine_whip_exit --frames 12                     # print AE settings of a named family
+python3 curve_fit.py fit   ref.mp4 --t0 1.2 --t1 1.8 --all --out cam    # every property that moved: cam_scale.*, cam_x.* ...
 ```
+With `--out prefix`, each fitted curve writes:
+
+| file | what |
+|---|---|
+| `prefix.png` | value + speed graph: measured points, the fit, the closest family |
+| `prefix.json` | the full analysis |
+| `prefix_keys.json` | the move as 2 AE keys: `t` (s, from the first key), `value`, out/in `influence` (%) and `speed` (units/s) |
+| `prefix_keys.jsx` | run it in AE (File > Scripts > Run Script File): puts the 2 keys at the playhead, one undo step |
+
+How the jsx applies the keys: `scale` multiplies the layer's current scale (a measured 100→150 pop on an 80 % layer
+becomes 80→120), `rot` adds degrees, `x`/`y` add the measured share of the frame in comp pixels (Position gets its
+dimensions separated). For `series` input say what the values are with `--prop scale|rot|x|y`; without it the jsx
+adds the move to every selected 1D property. Speeds are capped to finite values and influences to 0.1–100 %, which
+AE needs. The jsx was checked against a Node mock of the AE objects, not inside After Effects.
 
 ### grade_match.py: measure a grade and match a render to a reference
 Measures luma percentiles, channel balance, saturation and band casts, then prints per-channel Levels +

@@ -87,3 +87,54 @@ def test_cli_series_json(tmp_path):
     out = json.loads(r.stdout)
     assert out["frames"] == 20
     assert out["family"][0]["name"] == "easy_ease"
+
+
+# ---------------------------------------------------------------- AE keyframe export
+def _scale_pop():
+    tn = np.linspace(0, 1, 13)
+    v = 100 + 50 * cf.bez_eval(0.30, 0.0, 0.10, 1.0, tn)     # house_30_90, 100 -> 150 %
+    return cf.analyse(v, fps=24, name="pop.scale", units="%")
+
+
+def test_ae_keyframes_two_keys_match_fit():
+    res = _scale_pop()
+    k = cf.ae_keyframes(res, "scale")
+    assert k["match_name"] == "ADBE Scale" and k["mode"] == "multiply"
+    assert [key["t"] for key in k["keys"]] == [0.0, res["dur_s"]]
+    assert k["keys"][0]["value"] == pytest.approx(100)
+    assert k["keys"][1]["value"] == pytest.approx(150, abs=0.5)
+    assert k["keys"][0]["out"]["influence"] == res["fit"]["ae"]["out_influence"]
+    assert k["keys"][1]["in"]["influence"] == res["fit"]["ae"]["in_influence"]
+    json.dumps(k, allow_nan=False)                          # strict JSON, AE-safe
+
+
+def test_ae_keyframes_caps_non_finite_speed():
+    res = _scale_pop()
+    res["fit"]["ae"] = dict(res["fit"]["ae"], out_speed=float("inf"), in_speed=float("nan"))
+    k = cf.ae_keyframes(res, None)
+    assert k["keys"][0]["out"]["speed"] == cf.SPEED_CAP
+    assert k["keys"][1]["in"]["speed"] == 0.0
+    assert k["match_name"] is None and k["mode"] == "add"
+
+
+def test_ae_jsx_embeds_keys():
+    js = cf.ae_jsx(cf.ae_keyframes(_scale_pop(), "scale"))
+    assert '"ADBE Scale"' in js and "setTemporalEaseAtKey" in js and "beginUndoGroup" in js
+
+
+def test_cli_series_writes_keys(tmp_path):
+    pytest.importorskip("matplotlib")
+    vals = list(100 + 20 * cf.bez_eval(0.05, 0.75, 0.10, 1.0, np.linspace(0, 1, 16)))
+    src = tmp_path / "vals.json"
+    src.write_text(json.dumps(vals))
+    r = run_tool("curve_fit.py", "series", src, "--fps", "30", "--prop", "scale", "--out", tmp_path / "mv")
+    assert r.returncode == 0, r.stderr
+    keys = json.loads((tmp_path / "mv_keys.json").read_text())
+    assert keys["prop"] == "scale" and len(keys["keys"]) == 2
+    assert (tmp_path / "mv_keys.jsx").read_text().startswith("// curve_fit.py keys")
+    assert (tmp_path / "mv.png").stat().st_size > 0
+
+
+def test_cli_rejects_unknown_prop():
+    r = run_tool("curve_fit.py", "series", "x.json", "--prop", "opacity")
+    assert r.returncode != 0

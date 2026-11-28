@@ -13,6 +13,9 @@ Needs numpy, scipy, opencv-python, matplotlib (see requirements.txt):
   python3 curve_fit.py fit   <video> --t0 s --t1 s [--roi x,y,w,h] [--prop auto|scale|x|y|rot] --out prefix
   python3 curve_fit.py series <values.csv|json> --fps 20 --out prefix          # fit a curve you measured another way
   python3 curve_fit.py curve <family> [--frames N]                           # print the AE settings of a named family
+  fit --all: fit every property that moved (scale / rot / x / y), one graph + keys file each.
+  With --out, every fit also writes prefix_keys.json (2 AE keys: times, values, influence/speed) and prefix_keys.jsx
+  (run it in AE: puts those keys at the playhead on the selected layers, relative to their current value).
 
 Measurement:
   global (no --roi): similarity transform between consecutive frames (ORB/LK + RANSAC, fallback log-polar phase
@@ -357,6 +360,126 @@ def clean(res):
     return {k: v for k, v in res.items() if not k.startswith('_')}
 
 
+# ------------------------------------------------------------------------------------------------ AE keyframe export
+# prop -> (transform match name, how the measured values map onto the layer's own value)
+#   scale: measured % relative to 100 at t0 -> multiplies the layer's scale (a 100->150 pop on an 80 % layer = 80->120)
+#   rot:   degrees, added to the layer's rotation
+#   x / y: % of the frame width / height, converted to comp pixels when applied, added to the (separated) position
+AE_PROPS = {
+    'scale': ('ADBE Scale', 'multiply'),
+    'rot':   ('ADBE Rotate Z', 'add'),
+    'x':     ('ADBE Position_0', 'add_frac_w'),
+    'y':     ('ADBE Position_1', 'add_frac_h'),
+}
+AE_UNITS = dict(scale='%', rot='deg', x='% frame W', y='% frame H')
+SPEED_CAP = 1e6  # AE rejects non-finite speeds; a near-zero influence can give a huge one
+
+
+def _finite(x, cap=SPEED_CAP):
+    x = float(x)
+    if not math.isfinite(x): return math.copysign(cap, x) if not math.isnan(x) else 0.0
+    return max(-cap, min(cap, x))
+
+
+def ae_keyframes(res, prop=None):
+    """the fitted 2-key move as AE keyframe data: times relative to the start key, values in the measured units.
+
+    prop = scale | rot | x | y names the layer transform property it was measured on (None = any 1D property,
+    values added to it). Speeds are AE KeyframeEase speeds (value units / s, signed), influences in %."""
+    ae = res['fit']['ae']
+    match, mode = AE_PROPS.get(prop, (None, 'add'))
+    keys = [dict(t=0.0, value=res['v0'], out=dict(influence=ae['out_influence'], speed=_finite(ae['out_speed']))),
+            dict(t=res['dur_s'], value=res['v1'], **{'in': dict(influence=ae['in_influence'], speed=_finite(ae['in_speed']))})]
+    return dict(format='curve_fit.ae_keys/1', name=res['name'], prop=prop, match_name=match, mode=mode,
+                units=res['units'], fps=res['fps'], frames=res['frames'], keys=keys,
+                bezier=res['fit']['bezier'], rms_pct=res['fit']['rms_pct'],
+                family=res['family'][0]['name'] if res.get('family') else None)
+
+
+AE_JSX = r"""// curve_fit.py keys: %(name)s  (%(frames)d f @ %(fps)g fps, fit rms %(rms)s %%)
+// Run in AE (File > Scripts > Run Script File). Puts the 2 keys at the playhead:
+//   with a transform property (scale/rot/x/y): on every selected layer, relative to the layer's current value;
+//   without one: on every selected 1D property.
+(function () {
+    var K = %(json)s;
+    var comp = app.project.activeItem;
+    if (!(comp instanceof CompItem)) { alert("curve_fit: open a comp first"); return; }
+    var mul = K.mode === "multiply" && K.keys[0].value !== 0;  // a series that starts at 0 can only be added
+    function mapped(v, base, d) {
+        if (mul) return base * v / K.keys[0].value;
+        if (K.mode === "add_frac_w") return base + (v - K.keys[0].value) / 100 * comp.width;
+        if (K.mode === "add_frac_h") return base + (v - K.keys[0].value) / 100 * comp.height;
+        return base + (v - K.keys[0].value);
+    }
+    function speedScale(base) {
+        if (mul) return base / K.keys[0].value;
+        if (K.mode === "add_frac_w") return comp.width / 100;
+        if (K.mode === "add_frac_h") return comp.height / 100;
+        return 1;
+    }
+    function eases(e, bases) {
+        var a = [];
+        for (var d = 0; d < bases.length; d++) a.push(new KeyframeEase(e.speed * speedScale(bases[d]), Math.max(0.1, Math.min(100, e.influence))));
+        return a;
+    }
+    function apply(p) {
+        var t0 = comp.time, cur = p.valueAtTime(t0, false);
+        var arr = (typeof cur !== "number"), bases = arr ? cur : [cur], k, d, v, idx = [];
+        for (k = 0; k < K.keys.length; k++) {
+            if (arr) { v = []; for (d = 0; d < bases.length; d++) v.push(mapped(K.keys[k].value, bases[d], d)); }
+            else v = mapped(K.keys[k].value, cur, 0);
+            p.setValueAtTime(t0 + K.keys[k].t, v);
+        }
+        for (k = 0; k < K.keys.length; k++) idx.push(p.nearestKeyIndex(t0 + K.keys[k].t));
+        for (k = 0; k < idx.length; k++) p.setInterpolationTypeAtKey(idx[k], KeyframeInterpolationType.BEZIER, KeyframeInterpolationType.BEZIER);
+        p.setTemporalEaseAtKey(idx[0], p.keyInTemporalEase(idx[0]), eases(K.keys[0].out, bases));
+        p.setTemporalEaseAtKey(idx[1], eases(K.keys[1]["in"], bases), p.keyOutTemporalEase(idx[1]));
+    }
+    app.beginUndoGroup("curve_fit " + K.name);
+    var n = 0, i;
+    if (K.match_name) {
+        var L = comp.selectedLayers;
+        for (i = 0; i < L.length; i++) {
+            var tr = L[i].property("ADBE Transform Group");
+            if (K.match_name.indexOf("ADBE Position_") === 0) {
+                var pos = tr.property("ADBE Position");
+                if (!pos.dimensionsSeparated) pos.dimensionsSeparated = true;
+            }
+            var p = tr.property(K.match_name);
+            if (p) { apply(p); n++; }
+        }
+    } else {
+        var P = comp.selectedProperties;
+        for (i = 0; i < P.length; i++) {
+            if (P[i].propertyType === PropertyType.PROPERTY && P[i].canVaryOverTime && P[i].propertyValueType === PropertyValueType.OneD) { apply(P[i]); n++; }
+        }
+    }
+    app.endUndoGroup();
+    if (!n) alert(K.match_name ? "curve_fit: select a layer" : "curve_fit: select a 1D property");
+})();
+"""
+
+
+def ae_jsx(keys):
+    """an ExtendScript file that applies ae_keyframes() data (values embedded, so it needs no JSON parser in AE)."""
+    return AE_JSX % dict(name=' '.join(str(keys['name']).split()), frames=keys['frames'], fps=keys['fps'], rms=keys['rms_pct'],
+                         json=json.dumps(keys, allow_nan=False))
+
+
+def write_outputs(res, prefix, prop=None):
+    """prefix.png (value + speed graph), prefix.json (analysis), prefix_keys.json + prefix_keys.jsx (AE keys)."""
+    plot_fit(res, prefix + '.png', res['name'])
+    with open(prefix + '.json', 'w') as f: json.dump(clean(res), f, indent=1)
+    keys = ae_keyframes(res, prop)
+    with open(prefix + '_keys.json', 'w') as f: json.dump(keys, f, indent=1, allow_nan=False)
+    with open(prefix + '_keys.jsx', 'w') as f: f.write(ae_jsx(keys))
+    return keys
+
+
+# a property counts as "moving" (for --all) when its range passes this, in its own units
+MOVE_MIN = dict(scale=0.5, rot=0.5, x=0.5, y=0.5)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('cmd'); ap.add_argument('src', nargs='?')
@@ -364,7 +487,10 @@ def main():
     ap.add_argument('--roi'); ap.add_argument('--bbox', action='store_true')
     ap.add_argument('--prop', default='auto'); ap.add_argument('--fps', type=float, default=20)
     ap.add_argument('--frames', type=int, default=20); ap.add_argument('--out'); ap.add_argument('--name', default='move'); ap.add_argument('--end', default='auto')
+    ap.add_argument('--all', action='store_true', help='fit: fit every property that moves, one png + keys file each')
     a = ap.parse_args()
+    if a.prop not in ('auto', 'scale', 'rot', 'x', 'y'):
+        ap.error('--prop must be auto, scale, rot, x or y')
     if a.cmd == 'curve':
         x1, y1, x2, y2, note = FAMILIES[a.src]
         print(json.dumps(dict(family=a.src, bezier=[x1, y1, x2, y2], ae=bez_to_ae(x1, y1, x2, y2, 1.0, a.frames / a.fps), note=note), indent=1)); return
@@ -372,22 +498,36 @@ def main():
         rows, fps = scan(a.src, a.t0, a.t1, a.out or 'scan'); print(f'{len(rows)} frame pairs -> {a.out}_scan.csv/.png'); return
     if a.cmd == 'series':
         v = json.load(open(a.src)) if a.src.endswith('.json') else np.loadtxt(a.src, delimiter=',')
-        res = analyse(v, a.fps, a.name, end=a.end)
-    else:
+        prop = None if a.prop == 'auto' else a.prop  # series values: say which transform property they are, if any
+        res = analyse(v, a.fps, a.name, AE_UNITS.get(prop, ''), end=a.end)
+    elif a.cmd == 'fit':
         roi = [float(x) for x in a.roi.split(',')] if a.roi else None
         tr = track(a.src, a.t0, a.t1, roi, a.bbox)
-        cand = dict(scale=(tr['scale'] * 100, '%'), rot=(tr['rot'], 'deg'), x=(tr['x'] * 100, '% frame W'), y=(tr['y'] * 100, '% frame H'))
+        cand = dict(scale=(tr['scale'] * 100, AE_UNITS['scale']), rot=(tr['rot'], AE_UNITS['rot']),
+                    x=(tr['x'] * 100, AE_UNITS['x']), y=(tr['y'] * 100, AE_UNITS['y']))
+        mag = {k: (float(np.nanmax(c[0]) - np.nanmin(c[0])) if np.isfinite(c[0]).any() else 0.0) for k, c in cand.items()}
+        all_props = {k: [round(float(x), 3) for x in np.nan_to_num(c[0])] for k, c in cand.items()}
+        if a.all:
+            moving = [k for k in cand if mag[k] >= MOVE_MIN[k]]
+            if not moving:
+                print(json.dumps(dict(moving=[], range=mag), indent=1)); return
+            out = {}
+            for k in moving:
+                rk = analyse(cand[k][0], tr['fps'], f'{a.name}.{k}', cand[k][1], end=a.end)
+                if a.out: write_outputs(rk, f'{a.out}_{k}', k)
+                r = clean(rk); r.pop('expression', None); out[k] = r
+            print(json.dumps(dict(moving=moving, fits=out), indent=1)); return
         if a.prop == 'auto':
-            mag = dict(scale=abs(np.nanmax(tr['scale']) - np.nanmin(tr['scale'])) * 100 * 1.0, rot=np.ptp(np.nan_to_num(tr['rot'])) * 0.6,
-                       x=np.ptp(np.nan_to_num(tr['x'])) * 100, y=np.ptp(np.nan_to_num(tr['y'])) * 100)
-            prop = max(mag, key=mag.get)
+            weighted = dict(mag, rot=mag['rot'] * 0.6)  # a degree of rotation reads smaller than 1 % of travel
+            prop = max(weighted, key=weighted.get)
         else:
             prop = a.prop
         res = analyse(cand[prop][0], tr['fps'], f'{a.name}.{prop}', cand[prop][1], end=a.end)
-        res['all_props'] = {k: [round(float(x), 3) for x in np.nan_to_num(c[0])] for k, c in cand.items()}
+        res['all_props'] = all_props
+    else:
+        ap.error(f'unknown command {a.cmd!r} (scan, fit, series, curve)')
     if a.out:
-        plot_fit(res, a.out + '.png', res['name'])
-        json.dump(clean(res), open(a.out + '.json', 'w'), indent=1)
+        write_outputs(res, a.out, prop)
     r = clean(res); r.pop('all_props', None); r.pop('expression', None)
     print(json.dumps(r, indent=1))
 
